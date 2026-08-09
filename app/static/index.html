@@ -175,6 +175,9 @@
           <input type="text" id="url-speakers" placeholder="Speakers expected (optional, e.g. 2)" />
           <button class="btn" id="url-go">Transcribe</button>
         </div>
+        <div class="row">
+          <input type="text" id="url-names" placeholder="Guest / speaker names (comma-separated, optional)" />
+        </div>
       </div>
 
       <div id="pane-upload" class="pane">
@@ -183,6 +186,9 @@
         </div>
         <input type="file" id="file-input" accept="audio/*,video/*,.mp3,.mp4,.m4v,.m4a,.wav,.webm,.mov,.ogg,.flac,.aac,.m4b,.ts,.mts,.op" hidden />
         <div id="file-name"></div>
+        <div class="row" style="margin-top:12px">
+          <input type="text" id="up-names" placeholder="Speaker names (comma-separated, optional)" />
+        </div>
       </div>
 
       <div id="status" class="hidden"></div>
@@ -320,6 +326,7 @@
           body: JSON.stringify({
             url: url,
             speakers_expected: parseInt($("url-speakers").value, 10) || null,
+            ...buildSpeakerIdent(),
           }),
         });
         const data = await res.json();
@@ -330,6 +337,26 @@
       } catch (err) {
         failProgress("Failed to start: " + esc(err.message));
       }
+    }
+
+    function buildSpeakerIdent() {
+      // Name mode if the user typed names; otherwise role mode (Host + Guest).
+      const urlPane = $("pane-url").classList.contains("active");
+      const names = (((urlPane ? $("url-names") : $("up-names")).value) || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 10);
+      if (names.length) {
+        return {
+          speaker_type: "name",
+          speakers: names.map((name) => ({ name })),
+        };
+      }
+      const expected = Math.max(parseInt($("url-speakers").value, 10) || 2, 2);
+      const speakers = [{ role: "Host" }];
+      for (let i = 1; i < expected && i < 10; i++) speakers.push({ role: "Guest" });
+      return { speaker_type: "role", speakers };
     }
 
     async function pollJob(jobId) {
@@ -358,6 +385,9 @@
       try {
         const form = new FormData();
         form.append("file", file);
+        form.append("speakers_expected", $("url-speakers").value || "");
+        form.append("speaker_type", buildSpeakerIdent().speaker_type);
+        form.append("speakers", JSON.stringify(buildSpeakerIdent().speakers));
         const res = await fetch("/api/transcribe/upload", { method: "POST", body: form });
         const d = await res.json();
         if (!res.ok) throw new Error(d.detail || d.error || "Upload failed");

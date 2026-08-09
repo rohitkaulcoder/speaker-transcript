@@ -8,6 +8,7 @@ is deleted on request.
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import tempfile
@@ -18,7 +19,7 @@ from pathlib import Path
 logger = logging.getLogger("speaker_transcript")
 
 import yt_dlp
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -158,6 +159,8 @@ async def transcribe_upload(
     file: UploadFile = File(...),
     language_code: str | None = None,
     speakers_expected: int | None = None,
+    speaker_type: str | None = Form(None),
+    speakers: str | None = Form(None),
 ) -> dict:
     """Transcribe an uploaded audio/video file, streamed to a temp file (never RAM)."""
     ext = Path(file.filename or "").suffix.lower()
@@ -181,10 +184,19 @@ async def transcribe_upload(
             tmp.write(chunk)
         tmp.close()
 
+        speakers_parsed = None
+        if speakers:
+            try:
+                speakers_parsed = json.loads(speakers)
+            except ValueError as exc:
+                raise HTTPException(422, "speakers must be valid JSON") from exc
+
         req = UrlRequest(
             url="upload",
             language_code=language_code,
             speakers_expected=speakers_expected,
+            speaker_type=speaker_type,
+            speakers=speakers_parsed,
         )
         return await _submit(tmp_path, req)
     finally:
