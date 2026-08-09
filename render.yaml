@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: speaker-transcript
+    runtime: docker
+    repo: https://github.com/rohitkaulcoder/speaker-transcript
+    region: oregon
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: ASSEMBLYAI_API_KEY
+        sync: false

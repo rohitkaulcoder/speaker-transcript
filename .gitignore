@@ -1,0 +1,17 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Env
+.env
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Runtime
+*.log
