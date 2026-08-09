@@ -61,6 +61,30 @@ def index() -> FileResponse:
     return FileResponse(Path(__file__).parent / "static" / "index.html")
 
 
+@app.get("/diag")
+def diag() -> dict:
+    """Temporary diagnostic endpoint for debugging yt-dlp / node on this host."""
+    import shutil
+    import subprocess
+
+    out = {
+        "node_version": None,
+        "node_path": shutil.which("node"),
+        "deno_path": shutil.which("deno"),
+        "ytdlp_version": yt_dlp.version.__version__,
+        "has_cookies": bool(os.environ.get("YTDLP_COOKIES")),
+    }
+    nv = shutil.which("node")
+    if nv:
+        try:
+            out["node_version"] = subprocess.run(
+                [nv, "--version"], capture_output=True, text=True, timeout=10
+            ).stdout.strip()
+        except Exception as exc:
+            out["node_error"] = str(exc)
+    return out
+
+
 @app.post("/api/transcribe/url", status_code=202)
 async def transcribe_url(req: UrlRequest) -> dict:
     """Download audio from a YouTube URL, transcribe it, return a transcript id."""
@@ -165,9 +189,11 @@ def _download_audio(url: str) -> str:
 
     # YouTube's JS n-challenge: solve it with node (installed in the Docker
     # image) + the community challenge solver, so format selection gets actual
-    # media formats instead of images.
+    # media formats instead of images. Allow override for debugging.
+    runtime = os.environ.get("YTDLP_JSC", "node")
     ydl_opts["remote_components"] = ("ejs:github",)
-    ydl_opts["extractor_args"] = {"youtube": {"jsc": ["node"]}}
+    if runtime:
+        ydl_opts["extractor_args"] = {"youtube": {"jsc": [runtime]}}
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
