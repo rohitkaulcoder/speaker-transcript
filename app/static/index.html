@@ -155,6 +155,12 @@
     .btn-sm { padding: 6px 12px; font-size: 13px; }
     #prog-spinner { animation: spin 0.8s linear infinite; }
     #prog-spinner.hidden { display: none; }
+    .nav { display: flex; gap: 8px; margin-top: 14px; }
+    .archive-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+    .archive-item:last-of-type { border-bottom: none; }
+    .archive-title { font-weight: 600; }
+    .archive-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    #view-archive.hidden, #view-new.hidden { display: none; }
   </style>
 </head>
 <body>
@@ -438,6 +444,7 @@
             render(data);
             finishProgress(`Done in ${fmtDur(Date.now() - startedAt)}`);
             fetch(`/api/transcript/${id}`, { method: "DELETE" });
+            saveToArchive();  // fire-and-forget
             return;
           }
           if (data.status === "error") { failProgress("Transcription failed: " + esc(data.error || "unknown error")); return; }
@@ -466,6 +473,8 @@
     }
 
     let lastData = null;
+    let lastSource = null;   // {type, url, title, meta} of the current/last job
+    let lastArchiveId = null; // archive row id once saved
     // Maps the utterance-level speaker id (e.g. "Guest", "Host", or raw "A")
     // to the display label the user has set (e.g. "Wes Kao").
     const labelMap = new Map();
@@ -639,6 +648,126 @@
     }
 
     function clearBusy() { statusEl.innerHTML = ""; }
+
+    // ---------- View switching ----------
+    function showNew() {
+      $("view-new").classList.remove("hidden");
+      $("view-archive").classList.add("hidden");
+      $("nav-new").classList.add("active");
+      $("nav-archive").classList.remove("active");
+    }
+    function showArchive() {
+      $("view-new").classList.add("hidden");
+      $("view-archive").classList.remove("hidden");
+      $("nav-new").classList.remove("active");
+      $("nav-archive").classList.add("active");
+      loadArchive();
+    }
+    $("nav-new").addEventListener("click", showNew);
+    $("nav-archive").addEventListener("click", showArchive);
+    $("archive-refresh").addEventListener("click", loadArchive);
+
+    // ---------- Persistence ----------
+    function externalKey() {
+      if (!lastSource) return "";
+      if (lastSource.type === "youtube") {
+        const m = (lastSource.url || "").match(/[?&#]v=([\w-]{11})/);
+        return m ? m[1] : "yt-" + (lastSource.url || "").slice(-16);
+      }
+      return "up-" + lastSource.title; // upload: use filename
+    }
+
+    async function saveToArchive() {
+      if (!lastData || !lastSource) return;
+      const saveBtn = $("save-btn");
+      const msg = $("save-msg");
+      const mapping = {};
+      labelMap.forEach((v, k) => { mapping[k] = v; });
+
+      const payload = {
+        source_type: lastSource.type,
+        source_url: lastSource.url,
+        external_key: externalKey(),
+        title: lastSource.meta?.title || lastData.title || lastSource.title || "Untitled",
+        creator: lastSource.meta?.creator || "",
+        duration_seconds: lastSource.meta?.duration_seconds || null,
+        utterances: (lastData.utterances || []).map((u) => ({
+          speaker: u.speaker, text: u.text, start: u.start, end: u.end,
+        })),
+        speaker_mapping: Object.keys(mapping).length ? mapping : null,
+      };
+      try {
+        const res = await fetch("/api/archive", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.detail || d.error || "save failed");
+        lastArchiveId = d.archive_id;
+        msg.textContent = "Saved to archive";
+        msg.style.color = "var(--ok)";
+      } catch (err) {
+        msg.textContent = "Archive save failed: " + err.message;
+        msg.style.color = "#ff6b6b";
+      }
+    }
+    $("save-btn").addEventListener("click", saveToArchive);
+
+    // ---------- Archive list ----------
+    async function loadArchive() {
+      const box = $("archive-list");
+      box.innerHTML = '<div class="unknown">Loading…</div>';
+      try {
+        const res = await fetch("/api/archive");
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.detail || "failed to load archive");
+        box.innerHTML = "";
+        if (!d.rows.length) {
+          box.innerHTML = '<div class="unknown">No transcripts archived yet.</div>';
+          return;
+        }
+        d.rows.forEach((r) => {
+          const item = document.createElement("div");
+          item.className = "archive-item";
+          item.innerHTML = `
+            <div>
+              <div class="archive-title">${esc(r.title || "(untitled)")}</div>
+              <div class="archive-meta">
+                ${esc(r.creator || "")}${r.creator ? " · " : ""}${r.duration_seconds ? "· " + Math.round(r.duration_seconds / 60) + "m · " : ""}${esc((r.created_at || "").slice(0, 10))}
+              </div>
+            </div>
+            <button class="btn btn-sm" data-open="${r.id}">Open</button>`;
+          item.querySelector("[data-open]").addEventListener("click", () => openArchived(r.id));
+          box.appendChild(item);
+        });
+      } catch (err) {
+        box.innerHTML = `<div class="error">${esc(err.message)}</div>`;
+      }
+    }
+
+    async function openArchived(id) {
+      try {
+        const res = await fetch(`/api/archive/${id}`);
+        const row = await res.json();
+        if (!res.ok) throw new Error(row.detail || "failed to open");
+        lastArchiveId = id;
+        lastSource = { type: row.source_type, url: row.source_url || "", title: row.title || "", meta: { title: row.title, creator: row.creator, duration_seconds: row.duration_seconds } };
+        const data = { utterances: row.utterances, speaker_mapping: row.speaker_mapping };
+        render(data);
+        // Restore the user's saved label overrides where they still match.
+        const mapping = row.speaker_mapping || {};
+        for (const [k, v] of Object.entries(mapping)) {
+          if (labelMap.has(v)) labelMap.set(v, labelMap.get(v));
+        }
+        renderTranscriptBody();
+        $("save-msg").textContent = "Loaded from archive";
+        showNew();
+        $("out").classList.remove("hidden");
+      } catch (err) {
+        alert("Failed to open archived transcript: " + err.message);
+      }
+    }
   </script>
 </body>
 </html>

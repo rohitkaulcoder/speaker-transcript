@@ -227,7 +227,6 @@ async def transcript_delete(transcript_id: str) -> Response:
 
 
 class ArchiveSaveRequest(BaseModel):
-    transcript_id: str = Field(..., description="AssemblyAI transcript id (must be completed)")
     source_type: str = Field(..., pattern="^(youtube|upload)$")
     source_url: str = ""
     external_key: str = Field(..., description="Dedupe key: youtube video id, or upload hash")
@@ -235,17 +234,35 @@ class ArchiveSaveRequest(BaseModel):
     creator: str | None = None
     duration_seconds: int | None = None
     language: str | None = None
+    transcript_id: str | None = Field(
+        default=None, description="AssemblyAI transcript id (if not supplying utterances)"
+    )
+    utterances: list[dict] | None = Field(default=None)
+    speaker_mapping: dict | None = Field(default=None)
 
 
 @app.post("/api/archive", status_code=201)
 async def archive_save(req: ArchiveSaveRequest) -> dict:
-    """Persist a completed transcript to Supabase (upsert by external_key)."""
-    try:
-        data = await assembly.get_transcript(req.transcript_id)
-    except assembly.AssemblyError as exc:
-        raise HTTPException(exc.status, exc.message) from exc
-    if data.get("status") != "completed":
-        raise HTTPException(409, "transcript not completed yet")
+    """Persist a completed transcript to Supabase (upsert by external_key).
+
+    Either provide ``transcript_id`` (server fetches from AssemblyAI, must be
+    completed) or pass ``utterances`` directly.
+    """
+    utterances = req.utterances
+    speaker_mapping = req.speaker_mapping
+
+    if req.transcript_id and utterances is None:
+        try:
+            data = await assembly.get_transcript(req.transcript_id)
+        except assembly.AssemblyError as exc:
+            raise HTTPException(exc.status, exc.message) from exc
+        if data.get("status") != "completed":
+            raise HTTPException(409, "transcript not completed yet")
+        utterances = data["utterances"]
+        speaker_mapping = data.get("speaker_mapping")
+
+    if not utterances:
+        raise HTTPException(422, "no utterances to save")
 
     row = {
         "external_key": req.external_key,
@@ -255,8 +272,8 @@ async def archive_save(req: ArchiveSaveRequest) -> dict:
         "creator": req.creator,
         "duration_seconds": req.duration_seconds,
         "language": req.language,
-        "utterances": data["utterances"],
-        "speaker_mapping": data.get("speaker_mapping"),
+        "utterances": utterances,
+        "speaker_mapping": speaker_mapping,
     }
     try:
         saved = await archive.upsert_transcript(row)
