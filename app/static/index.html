@@ -119,8 +119,12 @@
       flex-shrink: 0;
     }
     .txt { padding-top: 4px; }
-    .meta { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; }
+    .meta { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
     .meta .btn { padding: 8px 14px; font-size: 13px; }
+    .meta-actions { margin-left: auto; display: flex; gap: 8px; }
+    .col { min-width: 0; }
+    .ts { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; margin-bottom: 2px; }
+    .txt { padding-top: 0; }
     .sp-base { background: #4f8cff; }
     .sp-b { background: #e0694f; }
     .sp-c { background: #3ecf8e; }
@@ -192,6 +196,11 @@
     <div class="card" id="out">
       <div class="meta">
         <span id="out-title">Transcript</span>
+        <span class="meta-actions">
+          <button class="btn btn-sm" id="copy-btn">Copy</button>
+          <button class="btn btn-sm" id="md-btn">Download .md</button>
+          <button class="btn btn-sm" id="pdf-btn">Download PDF</button>
+        </span>
       </div>
       <div id="transcript"></div>
     </div>
@@ -373,7 +382,19 @@
       return d.innerHTML;
     }
 
+    function fmtTs(ms) {
+      if (ms == null) return "--:--";
+      const s = Math.floor(ms / 1000);
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = String(s % 60).padStart(2, "0");
+      return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+    }
+
+    let lastData = null;
+
     function render(data) {
+      lastData = data;
       const box = $("transcript");
       box.innerHTML = "";
       const speakerIdx = new Map();
@@ -389,16 +410,101 @@
         const sp = document.createElement("div");
         sp.className = "speaker " + color(u.speaker);
         sp.textContent = u.speaker;
+        const col = document.createElement("div");
+        col.className = "col";
+        const ts = document.createElement("div");
+        ts.className = "ts";
+        ts.textContent = `[${fmtTs(u.start)} – ${fmtTs(u.end)}]`;
         const txt = document.createElement("div");
         txt.className = "txt";
         txt.textContent = u.text;
-        div.append(sp, txt);
+        col.append(ts, txt);
+        div.append(sp, col);
         box.appendChild(div);
       });
       if (!box.children.length) {
         box.innerHTML = '<div class="unknown">No speech detected.</div>';
       }
       $("out").classList.remove("hidden");
+    }
+
+    function transcriptBlocks() {
+      return (lastData?.utterances || []).map((u) => ({
+        speaker: u.speaker || "?",
+        text: (u.text || "").trim(),
+        start: u.start,
+        end: u.end,
+      }));
+    }
+
+    function toTxt() {
+      return transcriptBlocks()
+        .map((b) => `[${fmtTs(b.start)}] ${b.speaker}: ${b.text}`)
+        .join("\n");
+    }
+
+    function toMarkdown() {
+      const lines = ["# Transcript", ""];
+      for (const b of transcriptBlocks()) {
+        lines.push(`**[${fmtTs(b.start)} – ${fmtTs(b.end)}] ${b.speaker}:** ${b.text}`);
+        lines.push("");
+      }
+      return lines.join("\n");
+    }
+
+    function download(filename, text, mime) {
+      const blob = new Blob([text], { type: mime });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    }
+
+    $("copy-btn").addEventListener("click", () => {
+      const txt = toTxt();
+      navigator.clipboard
+        ? navigator.clipboard.writeText(txt).then(() => flashBtn("copy-btn", "Copied!"))
+        : download("transcript.txt", txt, "text/plain");
+    });
+
+    $("md-btn").addEventListener("click", () => {
+      download("transcript.md", toMarkdown(), "text/markdown");
+    });
+
+    $("pdf-btn").addEventListener("click", () => {
+      const win = window.open("", "_blank");
+      if (!win) { window.pdfFallback = toMarkdown; win && 0; }
+      // Print-to-PDF path (no extra deps): open styled page, user saves as PDF.
+      if (win) {
+        win.document.write(`<!doctype html><html><head><meta charset="utf-8">
+          <title>Transcript</title>
+          <style>
+            body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 24px; color: #222; }
+            h1 { font-size: 20px; }
+            .line { margin: 14px 0; font-size: 14px; line-height: 1.5; }
+            .ts { color: #777; font-size: 12px; }
+            .sp { font-weight: 700; }
+          </style></head><body>`);
+        win.document.write(`<h1>Transcript</h1>`);
+        for (const b of transcriptBlocks()) {
+          win.document.write(
+            `<div class="line"><div class="ts">[${fmtTs(b.start)} – ${fmtTs(b.end)}]</div><span class="sp">${esc(b.speaker)}:</span> ${esc(b.text)}</div>`
+          );
+        }
+        win.document.write(`</body></html>`);
+        win.document.close();
+        setTimeout(() => win.print(), 400);
+      }
+    });
+
+    function flashBtn(id, label) {
+      const btn = $(id);
+      const orig = btn.textContent;
+      btn.textContent = label;
+      btn.disabled = true;
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1500);
     }
 
     function clearBusy() { statusEl.innerHTML = ""; }

@@ -93,7 +93,13 @@ async def get_transcript(transcript_id: str) -> dict:
     payload = {"status": t.status, "id": t.id}
     if t.status == aai.TranscriptStatus.completed:
         payload["utterances"] = [
-            {"speaker": u.speaker, "text": u.text} for u in (t.utterances or [])
+            {
+                "speaker": u.speaker,
+                "text": u.text,
+                "start": u.start,
+                "end": u.end,
+            }
+            for u in (t.utterances or [])
         ]
     elif t.status == aai.TranscriptStatus.error:
         raise AssemblyError(422, t.error or "transcription failed",
