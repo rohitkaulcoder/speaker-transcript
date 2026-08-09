@@ -133,6 +133,18 @@
     .error { color: #ff6b6b; }
     #out.hidden { display: none; }
     #file-name { font-size: 13px; color: #6b7482; margin-top: 8px; }
+    #progress { margin-top: 16px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: #13161c; }
+    #progress.hidden { display: none; }
+    .progress-row { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+    .timer { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .bar { height: 6px; background: #22262f; border-radius: 4px; margin-top: 12px; overflow: hidden; }
+    .bar-fill { height: 100%; width: 30%; background: var(--accent); border-radius: 4px; animation: slide 1.2s ease-in-out infinite; }
+    @keyframes slide { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
+    #prog-error { margin-top: 12px; }
+    #prog-error .error { font-size: 13px; margin-bottom: 8px; }
+    .btn-sm { padding: 6px 12px; font-size: 13px; }
+    #prog-spinner { animation: spin 0.8s linear infinite; }
+    #prog-spinner.hidden { display: none; }
   </style>
 </head>
 <body>
@@ -163,7 +175,18 @@
         <div id="file-name"></div>
       </div>
 
-      <div id="status" style="margin-top:14px"></div>
+      <div id="progress" class="hidden">
+        <div class="progress-row">
+          <span class="spinner" id="prog-spinner"></span>
+          <span id="prog-stage">Starting…</span>
+          <span id="prog-timer" class="timer"></span>
+        </div>
+        <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
+        <div id="prog-error" class="hidden">
+          <div id="prog-error-msg" class="error"></div>
+          <button class="btn btn-sm" id="retry-btn">Try again</button>
+        </div>
+      </div>
     </div>
 
     <div class="card" id="out">
@@ -179,14 +202,69 @@
     const $ = (id) => document.getElementById(id);
     const tabs = document.querySelectorAll(".tab");
     const statusEl = $("status");
-    const spinner = '<span class="spinner"></span>';
+    const progressEl = $("progress");
+    const progStage = $("prog-stage");
+    const progTimer = $("prog-timer");
+    const progSpinner = $("prog-spinner");
+    const barFill = $("bar-fill");
+    const progError = $("prog-error");
+    const progErrorMsg = $("prog-error-msg");
+    let timerInt = null;
+    let startedAt = 0;
+    let retryFn = null;
+
+    function fmtDur(ms) {
+      const s = Math.floor(ms / 1000);
+      const m = Math.floor(s / 60);
+      return m > 0 ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+    }
+
+    function startProgress(stage, onRetry) {
+      clearBusy();
+      statusEl.innerHTML = "";
+      retryFn = onRetry || null;
+      progError.classList.add("hidden");
+      barFill.style.display = "";
+      progSpinner.classList.remove("hidden");
+      progStage.textContent = stage;
+      startedAt = Date.now();
+      progTimer.textContent = "0s";
+      progressEl.classList.remove("hidden");
+      if (timerInt) clearInterval(timerInt);
+      timerInt = setInterval(() => {
+        progTimer.textContent = fmtDur(Date.now() - startedAt);
+      }, 1000);
+    }
+
+    function setStage(stage) {
+      progStage.textContent = stage;
+    }
+
+    function finishProgress(msg) {
+      if (timerInt) { clearInterval(timerInt); timerInt = null; }
+      progressEl.classList.add("hidden");
+      statusEl.innerHTML = msg;
+    }
+
+    function failProgress(html) {
+      if (timerInt) { clearInterval(timerInt); timerInt = null; }
+      progSpinner.classList.add("hidden");
+      barFill.style.display = "none";
+      progErrorMsg.innerHTML = html;
+      progError.classList.remove("hidden");
+      if (retryFn) {
+        $("retry-btn").onclick = () => { retryFn(); };
+        $("retry-btn").classList.remove("hidden");
+      } else {
+        $("retry-btn").classList.add("hidden");
+      }
+    }
 
     tabs.forEach((tab) => {
       tab.addEventListener("click", () => {
         tabs.forEach((t) => t.classList.toggle("active", t === tab));
         $("pane-url").classList.toggle("active", tab.dataset.tab === "url");
         $("pane-upload").classList.toggle("active", tab.dataset.tab === "upload");
-        flushStatus();
       });
     });
 
@@ -208,8 +286,8 @@
 
     async function startFromUrl() {
       const url = $("yt-url").value.trim();
-      if (!url) return setStatus("Paste a YouTube URL first.", true);
-      setBusy("Starting download…");
+      if (!url) return failProgress("Paste a YouTube URL first.");
+      startProgress("Starting download…", startFromUrl);
       try {
         const res = await fetch("/api/transcribe/url", {
           method: "POST",
@@ -224,7 +302,7 @@
         $("out").classList.add("hidden");
         pollJob(data.job_id);
       } catch (err) {
-        setStatus("Error: " + err.message, true);
+        failProgress("Failed to start: " + esc(err.message));
       }
     }
 
@@ -235,36 +313,38 @@
           const data = await res.json();
           if (!res.ok) throw new Error(data.detail || data.error || "Polling failed");
 
-          if (data.status === "error") { setStatus("Error: " + data.error, true); return; }
-          if (data.transcript_id) { poll(data.transcript_id); return; }
-          setBusy("Downloading audio from YouTube…");
+          if (data.status === "error") { failProgress("Task failed: " + esc(data.error || "unknown error")); return; }
+          if (data.transcript_id) { setStage("Uploaded — transcribing…"); poll(data.transcript_id); return; }
+          setStage("Downloading audio from YouTube…");
           setTimeout(tick, 3000);
         } catch (err) {
-          setStatus("Error: " + err.message, true);
+          failProgress("Lost connection while downloading: " + esc(err.message));
         }
       };
       tick();
     }
 
-    function handleFile(file) {
+    async function handleFile(file) {
       const bad = !/\.(3ga|8svx|aac|ac3|aif|aiff|alac|amr|ape|au|dss|flac|flv|m4a|m4b|m4p|m4r|mp3|mpga|ogg|oga|mogg|opus|qcp|tta|voc|wav|wma|wv|webm|mts|m2ts|ts|mov|mp2|mp4|m4v|mxf)$/i.test(file.name);
-      if (bad) return setStatus("Unsupported file type.", true);
+      if (bad) return failProgress(`Unsupported file type: <strong>${esc(file.name)}</strong>`);
       $("file-name").textContent = `${file.name} (${(file.size / 1e6).toFixed(1)} MB)`;
-      setBusy("Uploading…");
-      const form = new FormData();
-      form.append("file", file);
-      fetch("/api/transcribe/upload", { method: "POST", body: form })
-        .then((res) => res.json().then((d) => ({ res, d })))
-        .then(({ res, d }) => {
-          if (!res.ok) throw new Error(d.detail || d.error || "Upload failed");
-          $("out").classList.add("hidden");
-          poll(d.transcript_id);
-        })
-        .catch((err) => setStatus("Error: " + err.message, true));
+      startProgress("Uploading…", () => handleFile(file));
+      try {
+        const form = new FormData();
+        form.append("file", file);
+        const res = await fetch("/api/transcribe/upload", { method: "POST", body: form });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.detail || d.error || "Upload failed");
+        $("out").classList.add("hidden");
+        setStage("Uploaded — transcribing…");
+        poll(d.transcript_id);
+      } catch (err) {
+        failProgress("Upload failed: " + esc(err.message));
+      }
     }
 
     async function poll(id) {
-      const started = Date.now();
+      retryFn = () => poll(id);
       const tick = async () => {
         try {
           const res = await fetch(`/api/transcript/${id}`);
@@ -273,18 +353,24 @@
 
           if (data.status === "completed") {
             render(data);
-            setStatus(`Done in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+            finishProgress(`Done in ${fmtDur(Date.now() - startedAt)}`);
             fetch(`/api/transcript/${id}`, { method: "DELETE" });
             return;
           }
-          if (data.status === "error") { setStatus("Transcription failed.", true); return; }
-          setBusy("Transcribing…");
+          if (data.status === "error") { failProgress("Transcription failed: " + esc(data.error || "unknown error")); return; }
+          setStage("Transcribing…");
           setTimeout(tick, 2500);
         } catch (err) {
-          setStatus("Error: " + err.message, true);
+          failProgress("Lost connection while transcribing: " + esc(err.message));
         }
       };
       tick();
+    }
+
+    function esc(s) {
+      const d = document.createElement("div");
+      d.textContent = s || "";
+      return d.innerHTML;
     }
 
     function render(data) {
@@ -315,17 +401,7 @@
       $("out").classList.remove("hidden");
     }
 
-    function setStatus(msg, isError) {
-      clearBusy();
-      statusEl.innerHTML = msg;
-      statusEl.className = isError ? "error" : "";
-    }
-    function setBusy(msg) {
-      statusEl.innerHTML = spinner + msg;
-      statusEl.className = "";
-    }
     function clearBusy() { statusEl.innerHTML = ""; }
-    function flushStatus() { }
   </script>
 </body>
 </html>
