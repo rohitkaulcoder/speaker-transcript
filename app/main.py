@@ -82,6 +82,39 @@ def diag() -> dict:
             ).stdout.strip()
         except Exception as exc:
             out["node_error"] = str(exc)
+
+    import base64 as _b64
+    cookies_b64 = os.environ.get("YTDLP_COOKIES")
+    if cookies_b64:
+        cpath = Path("/tmp/diag_cookies.txt")
+        cpath.write_bytes(_b64.b64decode(cookies_b64))
+        import yt_dlp
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "quiet": False,
+            "no_warnings": False,
+            "cookiefile": str(cpath),
+            "logger": None,
+            "remote_components": ("ejs:github",),
+            "extractor_args": {"youtube": {"jsc": ["node"]}},
+        }
+        import io, contextlib, traceback
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(
+                        "https://www.youtube.com/watch?v=pRGVgwcmn7w", download=False
+                    )
+            out["formats_count"] = len(info.get("formats") or [])
+            out["images_only"] = all(
+                f.get("vcodec") == "none" or f.get("acodec") == "none"
+                for f in (info.get("formats") or [])
+            )
+        except Exception as exc:
+            out["extract_error"] = str(exc)
+            out["extract_trace"] = traceback.format_exc()[-1200:]
+        out["ytdlp_output"] = buf.getvalue()[-1500:]
     return out
 
 
