@@ -163,6 +163,11 @@ def _download_audio(url: str) -> str:
         Path(cookie_path).write_bytes(base64.b64decode(cookies_b64))
         ydl_opts["cookiefile"] = cookie_path
 
+    # YouTube's JS n-challenge: solve it with deno + the community challenge
+    # solver, so format selection gets actual media formats instead of images.
+    ydl_opts["remote_components"] = ("ejs:github",)
+    ydl_opts["extractor_args"] = {"youtube": {"jsc": ["deno"]}}
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
     candidates = sorted(Path(tmp_dir).glob("audio.mp3"))
