@@ -20,7 +20,15 @@ from pydantic import BaseModel, Field
 from . import assembly
 
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB safety net
-SUPPORTED_EXT = {".mp3", ".mp4", ".m4a", ".wav", ".webm", ".ogg", ".flac", ".aac"}
+SUPPORTED_EXT = {
+    # Audio (AssemblyAI supports these natively)
+    ".3ga", ".8svx", ".aac", ".ac3", ".aif", ".aiff", ".alac", ".amr", ".ape",
+    ".au", ".dss", ".flac", ".flv", ".m4a", ".m4b", ".m4p", ".m4r", ".mp3",
+    ".mpga", ".ogg", ".oga", ".mogg", ".opus", ".qcp", ".tta", ".voc", ".wav",
+    ".wma", ".wv",
+    # Video (audio track is extracted server-side)
+    ".webm", ".mts", ".m2ts", ".ts", ".mov", ".mp2", ".mp4", ".m4v", ".mxf",
+}
 
 app = FastAPI(title="Speaker Transcript", version="0.1.0")
 

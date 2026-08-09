@@ -157,9 +157,9 @@
 
       <div id="pane-upload" class="pane">
         <div class="drop" id="drop">Drop an mp3 or mp4 here, or click to browse
-          <small>mp3, mp4, m4a, wav, webm, ogg, flac, aac — up to 500 MB</small>
+          <small>mp3, mp4, m4a/m4v, wav, webm, mov, ogg, flac, aac, m4b &amp; more — up to 500 MB</small>
         </div>
-        <input type="file" id="file-input" accept="audio/*,video/mp4,.mp3,.mp4,.m4a,.wav,.webm,.ogg,.flac,.aac" hidden />
+        <input type="file" id="file-input" accept="audio/*,video/*,.mp3,.mp4,.m4v,.m4a,.wav,.webm,.mov,.ogg,.flac,.aac,.m4b,.ts,.mts,.op" hidden />
         <div id="file-name"></div>
       </div>
 
@@ -229,7 +229,7 @@
     }
 
     function handleFile(file) {
-      const bad = !/\.(mp3|mp4|m4a|wav|webm|ogg|flac|aac)$/i.test(file.name);
+      const bad = !/\.(3ga|8svx|aac|ac3|aif|aiff|alac|amr|ape|au|dss|flac|flv|m4a|m4b|m4p|m4r|mp3|mpga|ogg|oga|mogg|opus|qcp|tta|voc|wav|wma|wv|webm|mts|m2ts|ts|mov|mp2|mp4|m4v|mxf)$/i.test(file.name);
       if (bad) return setStatus("Unsupported file type.", true);
       $("file-name").textContent = `${file.name} (${(file.size / 1e6).toFixed(1)} MB)`;
       setBusy("Uploading…");
