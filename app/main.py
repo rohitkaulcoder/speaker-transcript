@@ -33,10 +33,10 @@ class UrlRequest(BaseModel):
     )
 
 
-async def _submit(audio_url: str, req: UrlRequest) -> dict:
+async def _submit(audio: bytes, req: UrlRequest) -> dict:
     try:
-        transcript_id = await assembly.create_transcript(
-            audio_url,
+        transcript_id = await assembly.submit_audio(
+            audio,
             language_code=req.language_code,
             speakers_expected=req.speakers_expected,
         )
@@ -69,7 +69,7 @@ async def transcribe_url(req: UrlRequest) -> dict:
     finally:
         Path(audio_path).unlink(missing_ok=True)
 
-    return await _post_upload(audio, req)
+    return await _submit(audio, req)
 
 
 @app.post("/api/transcribe/upload", status_code=202)
@@ -94,38 +94,17 @@ async def transcribe_upload(
         language_code=language_code,
         speakers_expected=speakers_expected,
     )
-    return await _post_upload(content, req)
-
-
-async def _post_upload(audio: bytes, req: UrlRequest) -> dict:
-    try:
-        audio_url = await assembly.upload(audio)
-    except assembly.AssemblyError as exc:
-        raise HTTPException(502, f"Upload failed: {exc.message}") from exc
-    return await _submit(audio_url, req)
+    return await _submit(content, req)
 
 
 @app.get("/api/transcript/{transcript_id}")
 async def transcript_status(transcript_id: str) -> dict:
     """Poll status. Returns speaker-wise utterances once completed."""
     try:
-        data = assembly.get_transcript(transcript_id)
+        data = await assembly.get_transcript(transcript_id)
     except assembly.AssemblyError as exc:
         raise HTTPException(exc.status, exc.message) from exc
-
-    if data["status"] == "error":
-        raise HTTPException(422, data.get("error", "transcription failed"))
-
-    payload = {
-        "status": data["status"],
-        "id": data["id"],
-    }
-    if data["status"] == "completed":
-        payload["utterances"] = [
-            {"speaker": u["speaker"], "text": u["text"]} for u in data.get("utterances", [])
-        ]
-        payload["summary"] = data.get("summary")
-    return payload
+    return data
 
 
 @app.delete("/api/transcript/{transcript_id}", status_code=204)
@@ -153,7 +132,7 @@ def _download_audio(url: str) -> str:
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
-    candidates = sorted(Path(tmp_dir).iterdir())
+    candidates = sorted(Path(tmp_dir).glob("audio.mp3"))
     if not candidates:
         raise RuntimeError("yt-dlp produced no audio files")
     return str(candidates[0])
