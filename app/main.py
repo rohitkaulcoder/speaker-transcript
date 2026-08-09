@@ -8,9 +8,14 @@ is deleted on request.
 
 import asyncio
 import base64
+import logging
 import os
 import tempfile
+import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
+
+logger = logging.getLogger("speaker_transcript")
 
 import yt_dlp
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -34,6 +39,26 @@ SUPPORTED_EXT = {
 }
 
 app = FastAPI(title="Speaker Transcript", version="0.1.0")
+
+# In-memory job registry for async YouTube downloads. No persistence on purpose:
+# Render restarts clear it, and clients re-submit if they lose it mid-flight.
+_URL_JOBS: dict[str, dict] = {}
+_JOB_TTL = timedelta(hours=1)
+
+
+def _cleanup_jobs() -> None:
+    cutoff = datetime.utcnow() - _JOB_TTL
+    for jid in list(_URL_JOBS):
+        if _URL_JOBS[jid].get("created_at", datetime.utcnow()) < cutoff:
+            _URL_JOBS.pop(jid, None)
+
+
+def _job(job_id: str) -> dict:
+    _cleanup_jobs()
+    job = _URL_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found or expired")
+    return job
 
 
 class UrlRequest(BaseModel):
@@ -137,22 +162,60 @@ def diag() -> dict:
 
 @app.post("/api/transcribe/url", status_code=202)
 async def transcribe_url(req: UrlRequest) -> dict:
-    """Download audio from a YouTube URL, transcribe it, return a transcript id."""
+    """Download audio from a YouTube URL in the background; return a job id.
+
+    Download + ffmpeg extraction can take minutes on free-tier CPU, so we hand
+    back a job id immediately and let the client poll /api/job/{id}.
+    """
     if not req.url.strip():
         raise HTTPException(400, "URL is required")
 
+    job_id = uuid.uuid4().hex
+    _URL_JOBS[job_id] = {
+        "status": "downloading",
+        "transcript_id": None,
+        "error": None,
+        "created_at": datetime.utcnow(),
+    }
+    asyncio.create_task(_process_url_job(job_id, req))
+    return {"job_id": job_id, "status": "downloading"}
+
+
+async def _process_url_job(job_id: str, req: UrlRequest) -> None:
+    job = _URL_JOBS[job_id]
     try:
         loop = asyncio.get_running_loop()
         audio_path = await loop.run_in_executor(
             None, _download_audio, req.url.strip()
         )
     except Exception as exc:  # yt-dlp raises many error types
-        raise HTTPException(422, f"Failed to download audio: {exc}") from exc
+        job["error"] = f"Failed to download audio: {exc}"
+        job["status"] = "error"
+        logger.warning("job %s download failed: %s", job_id, exc)
+        return
 
     try:
-        return await _submit(audio_path, req)
+        result = await _submit(audio_path, req)
+        job["transcript_id"] = result["transcript_id"]
+        job["status"] = "transcribing"
+    except Exception as exc:
+        job["error"] = str(exc)
+        job["status"] = "error"
+        logger.warning("job %s submit failed: %s", job_id, exc)
     finally:
         Path(audio_path).unlink(missing_ok=True)
+
+
+@app.get("/api/job/{job_id}")
+async def job_status(job_id: str) -> dict:
+    """Poll for a URL-job. Returns transcript_id once download+submit is done."""
+    job = _job(job_id)
+    payload = {"job_id": job_id, "status": job["status"]}
+    if job["transcript_id"]:
+        payload["transcript_id"] = job["transcript_id"]
+    if job["error"]:
+        payload["error"] = job["error"]
+    return payload
 
 
 @app.post("/api/transcribe/upload", status_code=202)

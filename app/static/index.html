@@ -209,7 +209,7 @@
     async function startFromUrl() {
       const url = $("yt-url").value.trim();
       if (!url) return setStatus("Paste a YouTube URL first.", true);
-      setBusy("Downloading audio, then transcribing…");
+      setBusy("Starting download…");
       try {
         const res = await fetch("/api/transcribe/url", {
           method: "POST",
@@ -222,10 +222,28 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.error || "Request failed");
         $("out").classList.add("hidden");
-        poll(data.transcript_id);
+        pollJob(data.job_id);
       } catch (err) {
         setStatus("Error: " + err.message, true);
       }
+    }
+
+    async function pollJob(jobId) {
+      const tick = async () => {
+        try {
+          const res = await fetch(`/api/job/${jobId}`);
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || data.error || "Polling failed");
+
+          if (data.status === "error") { setStatus("Error: " + data.error, true); return; }
+          if (data.transcript_id) { poll(data.transcript_id); return; }
+          setBusy("Downloading audio from YouTube…");
+          setTimeout(tick, 3000);
+        } catch (err) {
+          setStatus("Error: " + err.message, true);
+        }
+      };
+      tick();
     }
 
     function handleFile(file) {
