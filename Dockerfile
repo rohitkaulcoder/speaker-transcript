@@ -1,5 +1,5 @@
 FROM node:22 AS node
-FROM denoland/deno:latest AS deno
+FROM denoland/deno:bin AS deno
 
 FROM python:3.12-slim
 
@@ -12,7 +12,7 @@ RUN apt-get update \
 
 # yt-dlp's YouTube JS challenge solver works most reliably with deno
 # (falls back to node if needed). Copy both runtimes from official images.
-COPY --from=deno /usr/local/bin/deno /usr/local/bin/deno
+COPY --from=deno /deno /usr/local/bin/deno
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/include/node /usr/local/include/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
