@@ -282,17 +282,18 @@ def _download_audio(url: str) -> str:
     Uses cookies from ``YTDLP_COOKIES`` (base64-encoded Netscape-cookie file) if
     present, which bypasses YouTube's "confirm you're not a bot" check on
     datacenter IPs.
+
+    No ffmpeg transcode: we grab the best single audio format (AAC m4a preferred,
+    opus/webm fallback) and send it to AssemblyAI as-is, since it accepts those
+    natively. Skipping the transcode removes ~2-3 min of CPU on weak hosts.
     """
     tmp_dir = tempfile.mkdtemp(prefix="st_")
     ydl_opts: dict = {
-        "format": "bestaudio/best",
+        "format": "bestaudio[ext=m4a]/bestaudio/best",
         "outtmpl": os.path.join(tmp_dir, "audio.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
-        "postprocessors": [
-            {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
-        ],
     }
     cookies_b64 = os.environ.get("YTDLP_COOKIES")
     if cookies_b64:
@@ -311,7 +312,7 @@ def _download_audio(url: str) -> str:
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
-    candidates = sorted(Path(tmp_dir).glob("audio.mp3"))
+    candidates = sorted(p for p in Path(tmp_dir).iterdir() if p.name.startswith("audio."))
     if not candidates:
         raise RuntimeError("yt-dlp produced no audio files")
     return str(candidates[0])
