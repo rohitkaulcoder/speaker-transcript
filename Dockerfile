@@ -1,4 +1,5 @@
 FROM node:22 AS node
+FROM denoland/deno:latest AS deno
 
 FROM python:3.12-slim
 
@@ -9,8 +10,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# yt-dlp's YouTube JS challenge solver requires node >= 22.
-# Debian's apt ships an old node, so copy a supported one from the node:22 image.
+# yt-dlp's YouTube JS challenge solver works most reliably with deno
+# (falls back to node if needed). Copy both runtimes from official images.
+COPY --from=deno /usr/local/bin/deno /usr/local/bin/deno
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/include/node /usr/local/include/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules

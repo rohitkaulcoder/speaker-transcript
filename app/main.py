@@ -237,10 +237,11 @@ def _download_audio(url: str) -> str:
         Path(cookie_path).write_bytes(base64.b64decode(cookies_b64))
         ydl_opts["cookiefile"] = cookie_path
 
-    # YouTube's JS n-challenge: solve it with node (installed in the Docker
-    # image) + the community challenge solver, so format selection gets actual
-    # media formats instead of images. Allow override for debugging.
-    runtime = os.environ.get("YTDLP_JSC", "node")
+    # YouTube's JS n-challenge: solve it using the JS runtime yt-dlp auto-picks
+    # (deno preferred, node fallback — both shipped in the Docker image) plus
+    # the community challenge solver, so format selection gets actual media
+    # formats instead of images. Allow override for debugging.
+    runtime = os.environ.get("YTDLP_JSC")
     ydl_opts["remote_components"] = ("ejs:github",)
     if runtime:
         ydl_opts["extractor_args"] = {"youtube": {"jsc": [runtime]}}
