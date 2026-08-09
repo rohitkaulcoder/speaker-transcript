@@ -19,7 +19,9 @@ from pydantic import BaseModel, Field
 
 from . import assembly
 
-MAX_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB safety net
+# Cap at 2 GB: below AssemblyAI's 2.2 GB /upload ceiling while staying safely
+# under Render free-tier demand. Files stream to a temp file, never to RAM.
+MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
 SUPPORTED_EXT = {
     # Audio (AssemblyAI supports these natively)
     ".3ga", ".8svx", ".aac", ".ac3", ".aif", ".aiff", ".alac", ".amr", ".ape",
@@ -41,10 +43,10 @@ class UrlRequest(BaseModel):
     )
 
 
-async def _submit(audio: bytes, req: UrlRequest) -> dict:
+async def _submit(audio_path: str, req: UrlRequest) -> dict:
     try:
         transcript_id = await assembly.submit_audio(
-            audio,
+            audio_path,
             language_code=req.language_code,
             speakers_expected=req.speakers_expected,
         )
@@ -73,11 +75,9 @@ async def transcribe_url(req: UrlRequest) -> dict:
         raise HTTPException(422, f"Failed to download audio: {exc}") from exc
 
     try:
-        audio = Path(audio_path).read_bytes()
+        return await _submit(audio_path, req)
     finally:
         Path(audio_path).unlink(missing_ok=True)
-
-    return await _submit(audio, req)
 
 
 @app.post("/api/transcribe/upload", status_code=202)
@@ -86,23 +86,36 @@ async def transcribe_upload(
     language_code: str | None = None,
     speakers_expected: int | None = None,
 ) -> dict:
-    """Transcribe an uploaded mp3/mp4. The file is streamed straight to AssemblyAI."""
+    """Transcribe an uploaded audio/video file, streamed to a temp file (never RAM)."""
     ext = Path(file.filename or "").suffix.lower()
     if ext not in SUPPORTED_EXT:
         raise HTTPException(
             415, f"Unsupported file type '{ext or 'unknown'}'. Use one of: {sorted(SUPPORTED_EXT)}"
         )
 
-    content = await file.read()
-    if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, f"File exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit")
-
-    req = UrlRequest(
-        url="upload",
-        language_code=language_code,
-        speakers_expected=speakers_expected,
+    tmp = tempfile.NamedTemporaryFile(
+        prefix="st_upload_", suffix=ext or ".bin", delete=False
     )
-    return await _submit(content, req)
+    tmp_path = tmp.name
+    try:
+        size = 0
+        while chunk := await file.read(1024 * 1024):  # 1 MB chunks
+            size += len(chunk)
+            if size > MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    413, f"File exceeds {MAX_UPLOAD_BYTES // (1024 ** 3)} GB limit"
+                )
+            tmp.write(chunk)
+        tmp.close()
+
+        req = UrlRequest(
+            url="upload",
+            language_code=language_code,
+            speakers_expected=speakers_expected,
+        )
+        return await _submit(tmp_path, req)
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
 
 
 @app.get("/api/transcript/{transcript_id}")

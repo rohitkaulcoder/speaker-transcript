@@ -42,8 +42,12 @@ track from **video formats** server-side:
 
 So yes — **`.mp4` works fine** (and `.mov`, `.webm`, `.m4v`, even `.ts`/.mxf
 recordings). You can also pass **any public audio URL** via the YouTube tab.
-Limits: files ≤ 500 MB via the tool (AssemblyAI supports up to ~5 GB directly);
-durations 160 ms – 10 h.
+Limits: files **≤ 2 GB** via the tool (AssemblyAI's `/upload` ceiling is
+2.2 GB, `/transcript` ~5 GB); durations 160 ms – 10 h.
+
+Oversized files are **rejected with a clear 413 error, never truncated**.
+Uploads stream to a temp file in 1 MB chunks and the SDK re-streams them to
+AssemblyAI, so a 1 GB file is never loaded into the server's RAM.
 
 ## Architecture
 

@@ -50,16 +50,20 @@ async def _run(fn, *args):
     return await asyncio.get_running_loop().run_in_executor(_threadpool, fn, *args)
 
 
-async def submit_audio(audio: bytes, *, language_code: str | None = None,
+async def submit_audio(audio_path: str, *, language_code: str | None = None,
                        speakers_expected: int | None = None) -> str:
-    """Upload + submit a transcription job; return the transcript id (queued)."""
+    """Upload + submit a transcription job; return the transcript id (queued).
+
+    ``audio_path`` is a local file path — the SDK streams it to AssemblyAI in
+    25 MB chunks, so large uploads never need to fit in RAM.
+    """
 
     _ensure_settings()
     config = _make_config(language_code, speakers_expected)
 
     def _submit() -> aai.Transcript:
         transcriber = aai.Transcriber()
-        t = transcriber.submit(audio, config=config)
+        t = transcriber.submit(audio_path, config=config)
         if t.status == aai.TranscriptStatus.error:
             raise AssemblyError(0, t.error or "transcription failed")
         return t
