@@ -67,12 +67,14 @@ def diag() -> dict:
     import json
     import shutil
     import subprocess
+    import httpx
+    import yt_dlp as _yt
 
     out: dict = {
         "node_version": None,
         "node_path": shutil.which("node"),
         "deno_path": shutil.which("deno"),
-        "ytdlp_version": getattr(yt_dlp.version, "__version__", "?"),
+        "ytdlp_version": getattr(_yt.version, "__version__", "?"),
         "has_cookies": bool(os.environ.get("YTDLP_COOKIES")),
     }
 
@@ -107,7 +109,6 @@ def diag() -> dict:
         if cookies_b64:
             cpath = Path("/tmp/diag_cookies.txt")
             cpath.write_bytes(_b64.b64decode(cookies_b64))
-            import yt_dlp
             ydl_opts = {
                 "format": "bestaudio/best",
                 "quiet": False,
@@ -121,7 +122,7 @@ def diag() -> dict:
             buf = io.StringIO()
             try:
                 with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    with _yt.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(
                             "https://www.youtube.com/watch?v=pRGVgwcmn7w", download=False
                         )
