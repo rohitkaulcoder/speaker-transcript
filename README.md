@@ -61,21 +61,29 @@ AssemblyAI, so a 1 GB file is never loaded into the server's RAM.
 
 ### Data flow
 
-1. **Client** submits a URL (`POST /api/transcribe/url`) or a file
-   (`POST /api/transcribe/upload`). The browser never holds an API key.
-2. **Server** downloads/streams the audio into memory, submits it via the
-   AssemblyAI SDK (non-blocking `submit` → returns `transcript_id`).
-3. **Client polls** `GET /api/transcript/{id}` every ~2.5 s.
+1. **Client** submits a YouTube URL (`POST /api/transcribe/url`) or uploads a
+   file (`POST /api/transcribe/upload`). The browser never holds an API key.
+2. **URL jobs** run in the background: yt-dlp grabs the best **native m4a**
+   (no ffmpeg transcode — that was the free-tier CPU bottleneck), then the
+   AssemblyAI SDK streams it up (`submit` → `transcript_id`). The API returns a
+   `job_id` immediately.
+3. **Client polls** `GET /api/job/{job_id}` until a `transcript_id` appears,
+   then `GET /api/transcript/{id}` every ~2.5 s.
 4. On **completed**, the server shapes `utterances[]` (`{speaker, text}`) into
    JSON; the client renders the color-coded transcript.
 5. The client fires `DELETE /api/transcript/{id}` to purge AssemblyAI's copy.
+
+**Measured on Render free tier (end-to-end):** YouTube URL → completed
+speaker-labelled transcript in **~60 s** (≈43 s download + submit, ≈17 s
+AssemblyAI).
 
 ## API endpoints
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/` | Web UI |
-| `POST` | `/api/transcribe/url` | `{url, speakers_expected?, language_code?}` → downloads with yt-dlp, returns `{transcript_id, status: "queued"}` (202) |
+| `POST` | `/api/transcribe/url` | `{url, speakers_expected?, language_code?}` → yt-dlp download in background, returns `{job_id, status: "downloading"}` (202) |
+| `GET` | `/api/job/{job_id}` | Poll URL-job; yields `transcript_id` when download+submit finish |
 | `POST` | `/api/transcribe/upload` | multipart `file` (+ optional `speakers_expected`, `language_code`) → returns `{transcript_id, status: "queued"}` (202) |
 | `GET` | `/api/transcript/{id}` | Poll. Returns `{status, id}`; adds `utterances` when completed |
 | `DELETE` | `/api/transcript/{id}` | Purges the transcript from AssemblyAI (204) |
@@ -86,14 +94,19 @@ Optional query/body params: `speakers_expected` (int 2–10, diarization hint),
 ## Local development
 
 ```bash
-# 1. Requires Python 3.10+ and ffmpeg (brew install ffmpeg)
+# 1. Requires Python 3.10+ and a JS runtime for yt-dlp's YouTube challenge
+#    solver (deno 2.3+ or node 22+; brew install deno node). ffmpeg no longer
+#    needed for YouTube — the app sends native m4a to AssemblyAI.
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 2. API key (get one at https://www.assemblyai.com/)
+# 2. API keys (get at https://www.assemblyai.com/)
 export ASSEMBLYAI_API_KEY=your_key
 
-# 3. Run
+# 3. Optional: YouTube cookies to avoid bot-checks on DC IPs
+#    export YTDLP_COOKIES="$(base64 -i cookies.txt | tr -d '\n')"
+
+# 4. Run
 uvicorn app.main:app --reload --port 8080
 ```
 
@@ -104,7 +117,8 @@ variable (or use `dotenv`/your shell).
 
 The repo ships everything needed:
 
-- **`Dockerfile`** — Python 3.12 + `ffmpeg` + app.
+- **`Dockerfile`** — Python 3.12 + `ffmpeg` (optional, unused for YouTube now) +
+  `deno` + node (for yt-dlp's YouTube JS-challenge solver).
 - **`render.yaml`** — Blueprint for a free web service (Oregon, health check `/`).
 
 **Via dashboard:** Render → New → Blueprint → select
@@ -141,6 +155,7 @@ The repo ships everything needed:
 |---|---|---|
 | `ASSEMBLYAI_API_KEY` | yes | AssemblyAI API key (server-side only, never in the browser) |
 | `ASSEMBLYAI_BASE_URL` | no | Region override, e.g. `https://api.eu.assemblyai.com` for EU residency |
+| `YTDLP_COOKIES` | no (for YT) | Base64-encoded Netscape-format cookies (YouTube session) — bypasses YouTube's bot check on datacenter IPs. Export with yt-dlp: `yt-dlp --cookies-from-browser chrome --cookies cookies.txt`, then `base64 -i cookies.txt \| tr -d '\n'`. Re-export when it stops working (cookies expire). |
 
 ## AssemblyAI notes (verified against live API docs)
 
