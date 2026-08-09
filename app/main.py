@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import assembly
+from . import archive, assembly
 
 # Cap at 2 GB: below AssemblyAI's 2.2 GB /upload ceiling while staying safely
 # under Render free-tier demand. Files stream to a temp file, never to RAM.
@@ -121,9 +121,10 @@ async def _process_url_job(job_id: str, req: UrlRequest) -> None:
     job = _URL_JOBS[job_id]
     try:
         loop = asyncio.get_running_loop()
-        audio_path = await loop.run_in_executor(
+        audio_path, meta = await loop.run_in_executor(
             None, _download_audio, req.url.strip()
         )
+        job["meta"] = meta
     except Exception as exc:  # yt-dlp raises many error types
         job["error"] = f"Failed to download audio: {exc}"
         job["status"] = "error"
@@ -149,6 +150,8 @@ async def job_status(job_id: str) -> dict:
     payload = {"job_id": job_id, "status": job["status"]}
     if job["transcript_id"]:
         payload["transcript_id"] = job["transcript_id"]
+    if job.get("meta"):
+        payload["meta"] = job["meta"]
     if job["error"]:
         payload["error"] = job["error"]
     return payload
@@ -223,16 +226,87 @@ async def transcript_delete(transcript_id: str) -> Response:
     return Response(status_code=204)
 
 
-def _download_audio(url: str) -> str:
-    """Download just the audio track of a YouTube URL to a temp dir, return its path.
+class ArchiveSaveRequest(BaseModel):
+    transcript_id: str = Field(..., description="AssemblyAI transcript id (must be completed)")
+    source_type: str = Field(..., pattern="^(youtube|upload)$")
+    source_url: str = ""
+    external_key: str = Field(..., description="Dedupe key: youtube video id, or upload hash")
+    title: str | None = None
+    creator: str | None = None
+    duration_seconds: int | None = None
+    language: str | None = None
 
-    Uses cookies from ``YTDLP_COOKIES`` (base64-encoded Netscape-cookie file) if
-    present, which bypasses YouTube's "confirm you're not a bot" check on
-    datacenter IPs.
 
-    No ffmpeg transcode: we grab the best single audio format (AAC m4a preferred,
-    opus/webm fallback) and send it to AssemblyAI as-is, since it accepts those
-    natively. Skipping the transcode removes ~2-3 min of CPU on weak hosts.
+@app.post("/api/archive", status_code=201)
+async def archive_save(req: ArchiveSaveRequest) -> dict:
+    """Persist a completed transcript to Supabase (upsert by external_key)."""
+    try:
+        data = await assembly.get_transcript(req.transcript_id)
+    except assembly.AssemblyError as exc:
+        raise HTTPException(exc.status, exc.message) from exc
+    if data.get("status") != "completed":
+        raise HTTPException(409, "transcript not completed yet")
+
+    row = {
+        "external_key": req.external_key,
+        "source_type": req.source_type,
+        "source_url": req.source_url,
+        "title": req.title,
+        "creator": req.creator,
+        "duration_seconds": req.duration_seconds,
+        "language": req.language,
+        "utterances": data["utterances"],
+        "speaker_mapping": data.get("speaker_mapping"),
+    }
+    try:
+        saved = await archive.upsert_transcript(row)
+    except archive.ArchiveError as exc:
+        raise HTTPException(exc.status, exc.message) from exc
+    return {"archive_id": saved["id"]}
+
+
+@app.get("/api/archive")
+async def archive_list(limit: int = 100) -> dict:
+    """List archived transcripts, newest first."""
+    try:
+        rows = await archive.list_transcripts(limit=min(limit, 200))
+    except archive.ArchiveError as exc:
+        raise HTTPException(exc.status, exc.message) from exc
+    return {"rows": rows}
+
+
+@app.get("/api/archive/{archive_id}")
+async def archive_get(archive_id: str) -> dict:
+    try:
+        row = await archive.get_transcript(archive_id)
+    except archive.ArchiveError as exc:
+        raise HTTPException(exc.status, exc.message) from exc
+    if not row:
+        raise HTTPException(404, "archived transcript not found")
+    return row
+
+
+@app.patch("/api/archive/{archive_id}")
+async def archive_patch(archive_id: str, updates: dict) -> dict:
+    """Overwrite speaker_mapping (and optionally label names) in the archive."""
+    allowed = {k: updates[k] for k in ("speaker_mapping",) if k in updates}
+    if not allowed:
+        raise HTTPException(422, "no supported fields provided")
+    try:
+        row = await archive.update_speaker_mapping(archive_id, allowed["speaker_mapping"])
+    except archive.ArchiveError as exc:
+        raise HTTPException(exc.status, exc.message) from exc
+    if not row:
+        raise HTTPException(404, "archived transcript not found")
+    return row
+
+
+def _download_audio(url: str) -> tuple[str, dict]:
+    """Download audio (native m4a, no transcode); return (path, metadata).
+
+    Uses cookies from ``YTDLP_COOKIES`` if present, which bypasses YouTube's
+    "confirm you're not a bot" check on datacenter IPs. The metadata dict holds
+    title/creator/duration for archival.
     """
     tmp_dir = tempfile.mkdtemp(prefix="st_")
     ydl_opts: dict = {
@@ -257,12 +331,18 @@ def _download_audio(url: str) -> str:
     if runtime:
         ydl_opts["extractor_args"] = {"youtube": {"jsc": [runtime]}}
 
+    info = None
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+        info = ydl.extract_info(url, download=True)
+    meta = {
+        "title": (info or {}).get("title"),
+        "creator": (info or {}).get("channel") or (info or {}).get("uploader"),
+        "duration_seconds": (info or {}).get("duration"),
+    }
     candidates = sorted(p for p in Path(tmp_dir).iterdir() if p.name.startswith("audio."))
     if not candidates:
         raise RuntimeError("yt-dlp produced no audio files")
-    return str(candidates[0])
+    return str(candidates[0]), meta
 
 
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
