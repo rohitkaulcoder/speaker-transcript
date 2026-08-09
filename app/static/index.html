@@ -161,8 +161,13 @@
   <header>
     <h1>Speaker Transcript</h1>
     <p>Paste a YouTube URL or upload an mp3/mp4. Get a speaker-labelled transcript.</p>
+    <nav class="nav">
+      <button class="btn btn-sm active" id="nav-new">New transcript</button>
+      <button class="btn btn-sm" id="nav-archive">Archive</button>
+    </nav>
   </header>
   <main>
+    <section id="view-new">
     <div class="card">
       <div class="tabs">
         <button class="tab active" data-tab="url">YouTube URL</button>
@@ -224,7 +229,22 @@
         </span>
       </div>
       <div id="transcript"></div>
+      <div class="meta" style="margin-top:16px">
+        <button class="btn btn-sm" id="save-btn">Save to archive</button>
+        <span id="save-msg" style="color: var(--ok); margin-left: 10px"></span>
+      </div>
     </div>
+    </section>
+
+    <section id="view-archive" class="hidden">
+      <div class="card">
+        <div class="meta">
+          <span>Archive</span>
+          <button class="btn btn-sm" id="archive-refresh">Refresh</button>
+        </div>
+        <div id="archive-list"></div>
+      </div>
+    </section>
   </main>
 
   <script>
@@ -367,7 +387,12 @@
           if (!res.ok) throw new Error(data.detail || data.error || "Polling failed");
 
           if (data.status === "error") { failProgress("Task failed: " + esc(data.error || "unknown error")); return; }
-          if (data.transcript_id) { setStage("Uploaded — transcribing…"); poll(data.transcript_id); return; }
+          if (data.transcript_id) {
+            lastSource = { type: "youtube", url: $("yt-url").value.trim(), meta: data.meta || {} };
+            setStage("Uploaded — transcribing…");
+            poll(data.transcript_id);
+            return;
+          }
           setStage("Downloading audio from YouTube…");
           setTimeout(tick, 3000);
         } catch (err) {
@@ -383,6 +408,7 @@
       $("file-name").textContent = `${file.name} (${(file.size / 1e6).toFixed(1)} MB)`;
       startProgress("Uploading…", () => handleFile(file));
       try {
+        lastSource = { type: "upload", url: "", title: file.name, meta: { title: file.name.replace(/\.[^.]+$/, "") } };
         const form = new FormData();
         form.append("file", file);
         form.append("speakers_expected", $("url-speakers").value || "");
