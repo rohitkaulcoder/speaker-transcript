@@ -64,16 +64,22 @@ def index() -> FileResponse:
 @app.get("/diag")
 def diag() -> dict:
     """Temporary diagnostic endpoint for debugging yt-dlp / node on this host."""
+    import json
     import shutil
     import subprocess
 
-    out = {
+    out: dict = {
         "node_version": None,
         "node_path": shutil.which("node"),
         "deno_path": shutil.which("deno"),
-        "ytdlp_version": yt_dlp.version.__version__,
+        "ytdlp_version": getattr(yt_dlp.version, "__version__", "?"),
         "has_cookies": bool(os.environ.get("YTDLP_COOKIES")),
     }
+
+    def _rescue(exc: Exception) -> dict:
+        import traceback
+
+        return {"ok": False, "error": str(exc), "trace": traceback.format_exc()[-1500:]}
     nv = shutil.which("node")
     if nv:
         try:
@@ -83,38 +89,48 @@ def diag() -> dict:
         except Exception as exc:
             out["node_error"] = str(exc)
 
-    import base64 as _b64
-    cookies_b64 = os.environ.get("YTDLP_COOKIES")
-    if cookies_b64:
-        cpath = Path("/tmp/diag_cookies.txt")
-        cpath.write_bytes(_b64.b64decode(cookies_b64))
-        import yt_dlp
-        ydl_opts = {
-            "format": "bestaudio/best",
-            "quiet": False,
-            "no_warnings": False,
-            "cookiefile": str(cpath),
-            "logger": None,
-            "remote_components": ("ejs:github",),
-            "extractor_args": {"youtube": {"jsc": ["node"]}},
-        }
-        import io, contextlib, traceback
-        buf = io.StringIO()
-        try:
-            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(
-                        "https://www.youtube.com/watch?v=pRGVgwcmn7w", download=False
-                    )
-            out["formats_count"] = len(info.get("formats") or [])
-            out["images_only"] = all(
-                f.get("vcodec") == "none" or f.get("acodec") == "none"
-                for f in (info.get("formats") or [])
-            )
-        except Exception as exc:
-            out["extract_error"] = str(exc)
-            out["extract_trace"] = traceback.format_exc()[-1200:]
-        out["ytdlp_output"] = buf.getvalue()[-1500:]
+    try:
+        import httpx
+
+        for probe_url in ("https://github.com", "https://yt-dl.org"):
+            try:
+                r = httpx.get(probe_url, timeout=10)
+                out[f"probe_{probe_url.split('//')[-1]}"] = r.status_code
+            except Exception as exc:
+                out[f"probe_{probe_url.split('//')[-1]}"] = f"ERR {exc}"
+    except Exception:
+        pass
+
+    try:
+        import base64 as _b64
+        cookies_b64 = os.environ.get("YTDLP_COOKIES")
+        if cookies_b64:
+            cpath = Path("/tmp/diag_cookies.txt")
+            cpath.write_bytes(_b64.b64decode(cookies_b64))
+            import yt_dlp
+            ydl_opts = {
+                "format": "bestaudio/best",
+                "quiet": False,
+                "no_warnings": False,
+                "cookiefile": str(cpath),
+                "logger": None,
+                "remote_components": ("ejs:github",),
+                "extractor_args": {"youtube": {"jsc": ["node"]}},
+            }
+            import io, contextlib
+            buf = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(
+                            "https://www.youtube.com/watch?v=pRGVgwcmn7w", download=False
+                        )
+                out["formats_count"] = len(info.get("formats") or [])
+            except Exception as exc:
+                out["extract_error"] = str(exc)
+            out["ytdlp_output"] = buf.getvalue()[-1800:]
+    except Exception as exc:
+        out.update(_rescue(exc))
     return out
 
 
