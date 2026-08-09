@@ -7,6 +7,7 @@ is deleted on request.
 """
 
 import asyncio
+import base64
 import os
 import tempfile
 from pathlib import Path
@@ -139,9 +140,14 @@ async def transcript_delete(transcript_id: str) -> Response:
 
 
 def _download_audio(url: str) -> str:
-    """Download just the audio track of a YouTube URL to a temp dir, return its path."""
+    """Download just the audio track of a YouTube URL to a temp dir, return its path.
+
+    Uses cookies from ``YTDLP_COOKIES`` (base64-encoded Netscape-cookie file) if
+    present, which bypasses YouTube's "confirm you're not a bot" check on
+    datacenter IPs.
+    """
     tmp_dir = tempfile.mkdtemp(prefix="st_")
-    ydl_opts = {
+    ydl_opts: dict = {
         "format": "bestaudio/best",
         "outtmpl": os.path.join(tmp_dir, "audio.%(ext)s"),
         "quiet": True,
@@ -151,6 +157,12 @@ def _download_audio(url: str) -> str:
             {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
         ],
     }
+    cookies_b64 = os.environ.get("YTDLP_COOKIES")
+    if cookies_b64:
+        cookie_path = os.path.join(tmp_dir, "cookies.txt")
+        Path(cookie_path).write_bytes(base64.b64decode(cookies_b64))
+        ydl_opts["cookiefile"] = cookie_path
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
     candidates = sorted(Path(tmp_dir).glob("audio.mp3"))
