@@ -123,9 +123,14 @@
     .meta { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
     .meta .btn { padding: 8px 14px; font-size: 13px; }
     .meta-actions { margin-left: auto; display: flex; gap: 8px; }
+    .meta .hint { color: var(--muted); font-size: 12px; margin-left: auto; }
     .col { min-width: 0; }
     .ts { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; margin-bottom: 2px; }
     .txt { padding-top: 0; }
+    #speakers-card.hidden { display: none; }
+    #speakers-panel { display: flex; flex-wrap: wrap; gap: 10px; }
+    .sp-row { display: flex; align-items: center; gap: 8px; }
+    .sp-row input { width: 180px; margin-bottom: 0; }
     .sp-base { background: #4f8cff; }
     .sp-b { background: #e0694f; }
     .sp-c { background: #3ecf8e; }
@@ -193,6 +198,14 @@
           <button class="btn btn-sm" id="retry-btn">Try again</button>
         </div>
       </div>
+    </div>
+
+    <div class="card hidden" id="speakers-card">
+      <div class="meta">
+        <span>Speakers</span>
+        <span class="hint">Edit names — the transcript updates automatically</span>
+      </div>
+      <div id="speakers-panel"></div>
     </div>
 
     <div class="card" id="out">
@@ -312,6 +325,7 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.error || "Request failed");
         $("out").classList.add("hidden");
+        $("speakers-card").classList.add("hidden");
         pollJob(data.job_id);
       } catch (err) {
         failProgress("Failed to start: " + esc(err.message));
@@ -348,6 +362,7 @@
         const d = await res.json();
         if (!res.ok) throw new Error(d.detail || d.error || "Upload failed");
         $("out").classList.add("hidden");
+        $("speakers-card").classList.add("hidden");
         setStage("Uploaded — transcribing…");
         poll(d.transcript_id);
       } catch (err) {
@@ -395,24 +410,72 @@
     }
 
     let lastData = null;
+    // Maps the utterance-level speaker id (e.g. "Guest", "Host", or raw "A")
+    // to the display label the user has set (e.g. "Wes Kao").
+    const labelMap = new Map();
 
-    function render(data) {
-      lastData = data;
+    function registeredSpeakerIds() {
+      const seen = [];
+      for (const u of lastData?.utterances || []) {
+        if (u.speaker && !seen.includes(u.speaker)) seen.push(u.speaker);
+      }
+      return seen;
+    }
+
+    function buildSpeakersPanel() {
+      // Each utterance's speaker is already the identified role/name, but if
+      // speakers share an id after identification we still handle it fine.
+      const ids = registeredSpeakerIds();
+      if (!ids.length) {
+        $("speakers-card").classList.add("hidden");
+        return;
+      }
+      ids.forEach((id) => { if (!labelMap.has(id)) labelMap.set(id, id); });
+
+      const panel = $("speakers-panel");
+      panel.innerHTML = "";
+      ids.forEach((id, i) => {
+        const row = document.createElement("div");
+        row.className = "sp-row";
+        const sw = document.createElement("div");
+        sw.className = "speaker " + (PALETTE[i % PALETTE.length]);
+        sw.textContent = id.slice(0, 2).toUpperCase();
+        const input = document.createElement("input");
+        input.type = "text";
+        input.value = labelMap.get(id);
+        input.placeholder = id;
+        input.addEventListener("input", () => {
+          labelMap.set(id, input.value.trim() || id);
+          renderTranscriptBody();
+        });
+        row.append(sw, input);
+        panel.appendChild(row);
+      });
+      $("speakers-card").classList.remove("hidden");
+    }
+
+    function displayName(id) {
+      return labelMap.get(id) || id || "?";
+    }
+
+    function renderTranscriptBody() {
       const box = $("transcript");
       box.innerHTML = "";
-      const speakerIdx = new Map();
+      const seen = [];
+      const colors = new Map();
       let next = 0;
       const color = (id) => {
-        if (!speakerIdx.has(id)) speakerIdx.set(id, PALETTE[next++ % PALETTE.length]);
-        return speakerIdx.get(id);
+        if (!colors.has(id)) colors.set(id, PALETTE[next++ % PALETTE.length]);
+        return colors.get(id);
       };
 
-      (data.utterances || []).forEach((u) => {
+      (lastData?.utterances || []).forEach((u) => {
+        const name = displayName(u.speaker);
         const div = document.createElement("div");
         div.className = "utterance";
         const sp = document.createElement("div");
         sp.className = "speaker " + color(u.speaker);
-        sp.textContent = u.speaker;
+        sp.textContent = name;
         const col = document.createElement("div");
         col.className = "col";
         const ts = document.createElement("div");
@@ -428,12 +491,21 @@
       if (!box.children.length) {
         box.innerHTML = '<div class="unknown">No speech detected.</div>';
       }
+    }
+
+    function render(data) {
+      lastData = data;
+      labelMap.clear();
+      buildSpeakersPanel();
+      renderTranscriptBody();
+      // Color badges by detected id, then swap to display labels.
       $("out").classList.remove("hidden");
+      $("out-title").textContent = "Transcript";
     }
 
     function transcriptBlocks() {
       return (lastData?.utterances || []).map((u) => ({
-        speaker: u.speaker || "?",
+        speaker: displayName(u.speaker),
         text: (u.text || "").trim(),
         start: u.start,
         end: u.end,
