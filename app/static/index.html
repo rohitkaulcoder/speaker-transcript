@@ -89,6 +89,7 @@
     .drop.over { border-color: var(--accent); }
     .drop small { display: block; margin-top: 6px; color: #6b7482; }
     #status { color: var(--muted); font-size: 14px; margin-bottom: 12px; }
+    #status.hidden { display: none; }
     .spinner {
       display: inline-block;
       width: 12px; height: 12px;
@@ -179,6 +180,7 @@
         <div id="file-name"></div>
       </div>
 
+      <div id="status" class="hidden"></div>
       <div id="progress" class="hidden">
         <div class="progress-row">
           <span class="spinner" id="prog-spinner"></span>
@@ -253,6 +255,7 @@
       if (timerInt) { clearInterval(timerInt); timerInt = null; }
       progressEl.classList.add("hidden");
       statusEl.innerHTML = msg;
+      statusEl.classList.remove("hidden");
     }
 
     function failProgress(html) {
