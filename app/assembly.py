@@ -35,13 +35,34 @@ def _ensure_settings() -> None:
     )
 
 
-def _make_config(language_code: str | None, speakers_expected: int | None) -> aai.TranscriptionConfig:
-    return aai.TranscriptionConfig(
+def _make_config(
+    language_code: str | None,
+    speakers_expected: int | None,
+    speaker_type: str | None = None,
+    speakers: list[dict] | None = None,
+) -> aai.TranscriptionConfig:
+    """Build the transcription config.
+
+    ``speaker_type`` / ``speakers`` enable AssemblyAI's Speaker Identification
+    add-on, replacing generic A/B labels with roles (Host, Guest) or names.
+    """
+    config = aai.TranscriptionConfig(
         speech_models=["universal-3-5-pro", "universal-2"],
         speaker_labels=True,
         speakers_expected=speakers_expected,
         language_code=language_code,
     )
+    if speaker_type and speakers:
+        ident = aai.SpeakerIdentificationRequest(
+            speaker_type=aai.SpeakerType(speaker_type),
+            speakers=speakers,
+        )
+        config.speech_understanding = aai.SpeechUnderstandingRequest(
+            request=aai.SpeechUnderstandingFeatureRequests(
+                speaker_identification=ident
+            )
+        )
+    return config
 
 
 async def _run(fn, *args):
@@ -51,7 +72,9 @@ async def _run(fn, *args):
 
 
 async def submit_audio(audio_path: str, *, language_code: str | None = None,
-                       speakers_expected: int | None = None) -> str:
+                       speakers_expected: int | None = None,
+                       speaker_type: str | None = None,
+                       speakers: list[dict] | None = None) -> str:
     """Upload + submit a transcription job; return the transcript id (queued).
 
     ``audio_path`` is a local file path — the SDK streams it to AssemblyAI in
@@ -59,7 +82,7 @@ async def submit_audio(audio_path: str, *, language_code: str | None = None,
     """
 
     _ensure_settings()
-    config = _make_config(language_code, speakers_expected)
+    config = _make_config(language_code, speakers_expected, speaker_type, speakers)
 
     def _submit() -> aai.Transcript:
         transcriber = aai.Transcriber()
@@ -90,21 +113,33 @@ async def get_transcript(transcript_id: str) -> dict:
     except Exception as exc:
         raise AssemblyError(404, f"Transcript lookup failed: {exc}") from exc
 
-    payload = {"status": t.status, "id": t.id}
     if t.status == aai.TranscriptStatus.completed:
-        payload["utterances"] = [
-            {
-                "speaker": u.speaker,
+        payload = {"status": "completed", "id": t.id}
+        mapping = None
+        su = t.speech_understanding
+        if su and su.response and su.response.speaker_identification:
+            ident = su.response.speaker_identification
+            if ident.mapping:
+                mapping = ident.mapping
+        payload["speaker_mapping"] = mapping
+
+        utterances = []
+        for u in (t.utterances or []):
+            speaker = u.speaker
+            if isinstance(mapping, dict) and speaker in mapping:
+                speaker = mapping[speaker]
+            utterances.append({
+                "speaker": speaker,
                 "text": u.text,
                 "start": u.start,
                 "end": u.end,
-            }
-            for u in (t.utterances or [])
-        ]
-    elif t.status == aai.TranscriptStatus.error:
+            })
+        payload["utterances"] = utterances
+        return payload
+    if t.status == aai.TranscriptStatus.error:
         raise AssemblyError(422, t.error or "transcription failed",
                             transcript_id=transcript_id)
-    return payload
+    return {"status": t.status, "id": t.id}
 
 
 async def delete_transcript(transcript_id: str) -> None:

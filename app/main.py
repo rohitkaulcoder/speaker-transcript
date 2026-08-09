@@ -67,6 +67,13 @@ class UrlRequest(BaseModel):
     speakers_expected: int | None = Field(
         default=None, ge=2, le=10, description="Optional hint for diarization"
     )
+    speaker_type: str | None = Field(
+        default=None, pattern="^(name|role)$",
+        description="AssemblyAI Speaker Identification: 'name' or 'role'"
+    )
+    speakers: list[dict] | None = Field(
+        default=None, description="e.g. [{'role': 'Host'}, {'role': 'Guest'}] or [{'name': ...}, ...]"
+    )
 
 
 async def _submit(audio_path: str, req: UrlRequest) -> dict:
@@ -75,6 +82,8 @@ async def _submit(audio_path: str, req: UrlRequest) -> dict:
             audio_path,
             language_code=req.language_code,
             speakers_expected=req.speakers_expected,
+            speaker_type=req.speaker_type,
+            speakers=req.speakers,
         )
     except assembly.AssemblyError as exc:
         raise HTTPException(502, f"Submit failed: {exc.message}") from exc
